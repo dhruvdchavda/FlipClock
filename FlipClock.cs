@@ -132,12 +132,13 @@ namespace FlipClock
     // A card showing two digits. A change folds the top half down over the bottom half.
     public class FlipCard : Grid
     {
-        internal const double CardWidth = 470;
+        internal const double CardWidth = 360; // Just wider than the widest pair of digits
         internal const double CardHeight = 500;
         internal const double Corner = 34;
         private const double DigitSize = 430;
         private const double MaxShade = 0.55;
-        private static readonly Duration FlipTime = TimeSpan.FromMilliseconds(600);
+        private const double LabelGap = 22;
+        internal static readonly Duration FlipTime = TimeSpan.FromMilliseconds(600);
 
         // Same as the screen background, so only the digits and the split across them show.
         // Each half still needs this fill, to hide the digits behind it during a flip.
@@ -162,16 +163,17 @@ namespace FlipClock
             FontFamily = new FontFamily("Bahnschrift, Segoe UI"),
             FontWeight = FontWeights.SemiBold,
             FontStretch = FontStretches.Condensed,
-            FontSize = 56,
-            Foreground = InkBrush,
-            Margin = new Thickness(26, 0, 0, 80),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Bottom
+            FontSize = 46,
+            Foreground = InkBrush
         };
+        private readonly bool _alignRight;
         private string _value;
 
-        public FlipCard()
+        // Hours align right and minutes align left, which keeps the gap between them the same
+        // when the hour has only one digit
+        public FlipCard(bool alignRight)
         {
+            _alignRight = alignRight;
             Width = CardWidth;
             Height = CardHeight;
             Children.Add(_top);
@@ -184,7 +186,11 @@ namespace FlipClock
                 Fill = Brushes.Black,
                 VerticalAlignment = VerticalAlignment.Center
             });
-            Children.Add(_label);
+            // A Canvas lets the label sit outside the card, just left of the digits
+            var labelLayer = new Canvas();
+            Canvas.SetBottom(_label, 84);
+            labelLayer.Children.Add(_label);
+            Children.Add(labelLayer);
             ApplyProgress(1);
         }
 
@@ -196,6 +202,21 @@ namespace FlipClock
 
         public string Label { set { _label.Text = value; } }
 
+        // Left edge of the digits and label, measured from the left of the card
+        public double VisibleLeft
+        {
+            get
+            {
+                var left = GetGeometry(_value).Bounds.Left;
+                if (string.IsNullOrEmpty(_label.Text))
+                    return left;
+                _label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                return left - LabelGap - _label.DesiredSize.Width;
+            }
+        }
+
+        public double VisibleRight { get { return GetGeometry(_value).Bounds.Right; } }
+
         public void ShowValue(string value, bool animate)
         {
             if (value == _value)
@@ -204,6 +225,7 @@ namespace FlipClock
             var oldValue = _value;
             _value = value;
             var digits = GetGeometry(value);
+            Canvas.SetRight(_label, CardWidth - digits.Bounds.Left + LabelGap);
 
             BeginAnimation(FlipProgressProperty, null);
             if (!animate || oldValue == null)
@@ -257,19 +279,20 @@ namespace FlipClock
             }
         }
 
-        private static Geometry GetGeometry(string text)
+        private Geometry GetGeometry(string text)
         {
+            var key = (_alignRight ? "R" : "L") + text;
             Geometry geometry;
-            if (GeometryCache.TryGetValue(text, out geometry))
+            if (GeometryCache.TryGetValue(key, out geometry))
                 return geometry;
 
             // Centring on the shape of "0" keeps the hinge across the middle of every digit
             var outline = TextGeometry(text);
             outline.Transform = new TranslateTransform(
-                (CardWidth - outline.Bounds.Width) / 2 - outline.Bounds.X,
+                _alignRight ? CardWidth - outline.Bounds.Right : -outline.Bounds.X,
                 (CardHeight - ReferenceBounds.Height) / 2 - ReferenceBounds.Y);
             outline.Freeze();
-            GeometryCache[text] = outline;
+            GeometryCache[key] = outline;
             return outline;
         }
 
@@ -290,14 +313,19 @@ namespace FlipClock
     // The clock itself. Scales to fit whatever size it is given.
     public class ClockView : Viewbox
     {
-        private const double Gap = 34;
+        private const double Gap = 140;
         private const double Drift = 14;
+        private const double TypicalSecondsSlack = 46;
 
         private readonly Settings _settings;
-        private readonly FlipCard _hours = new FlipCard();
-        private readonly FlipCard _minutes = new FlipCard();
-        private readonly FlipCard _seconds = new FlipCard();
-        private readonly TranslateTransform _drift = new TranslateTransform();
+        private readonly FlipCard _hours = new FlipCard(true);
+        private readonly FlipCard _minutes = new FlipCard(false);
+        private readonly FlipCard _seconds = new FlipCard(false);
+        private readonly TranslateTransform _offset = new TranslateTransform();
+        private double _driftX;
+        private double _driftY;
+        private double _targetX;
+        private double _targetY;
         private readonly DispatcherTimer _timer = new DispatcherTimer();
         private readonly Random _random = new Random();
         private int _lastMinute = -1;
@@ -310,8 +338,8 @@ namespace FlipClock
             var row = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Margin = new Thickness(180),
-                RenderTransform = _drift
+                Margin = new Thickness(240),
+                RenderTransform = _offset
             };
             row.Children.Add(_hours);
             _minutes.Margin = new Thickness(Gap, 0, 0, 0);
@@ -344,10 +372,37 @@ namespace FlipClock
             // Move slightly each minute so that the same pixels are not lit for hours
             if (_lastMinute != -1 && _lastMinute != now.Minute)
             {
-                _drift.X = (_random.NextDouble() * 2 - 1) * Drift;
-                _drift.Y = (_random.NextDouble() * 2 - 1) * Drift;
+                _driftX = (_random.NextDouble() * 2 - 1) * Drift;
+                _driftY = (_random.NextDouble() * 2 - 1) * Drift;
             }
             _lastMinute = now.Minute;
+
+            MoveTo(GetCentringOffset() + _driftX, _driftY, animate);
+        }
+
+        // Digits differ in width, so centre on what is actually lit rather than on the cards.
+        // With seconds showing, assume a typical width or the clock would shift every second.
+        private double GetCentringOffset()
+        {
+            var cardCount = _settings.ShowSeconds ? 3 : 2;
+            var rowWidth = cardCount * FlipCard.CardWidth + (cardCount - 1) * Gap;
+            var right = _settings.ShowSeconds ? rowWidth - TypicalSecondsSlack : FlipCard.CardWidth + Gap + _minutes.VisibleRight;
+            return rowWidth / 2 - (_hours.VisibleLeft + right) / 2;
+        }
+
+        private void MoveTo(double x, double y, bool animate)
+        {
+            if (x == _targetX && y == _targetY)
+                return;
+            _targetX = x;
+            _targetY = y;
+            _offset.BeginAnimation(TranslateTransform.XProperty, animate ? new DoubleAnimation(x, FlipCard.FlipTime) : null);
+            _offset.BeginAnimation(TranslateTransform.YProperty, animate ? new DoubleAnimation(y, FlipCard.FlipTime) : null);
+            if (!animate)
+            {
+                _offset.X = x;
+                _offset.Y = y;
+            }
         }
 
         // Sleeps until the next change, so nothing runs between flips
