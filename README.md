@@ -1,6 +1,6 @@
 # FlipClock
 
-A lightweight flip clock screensaver for Windows 10 and 11. It is a single 20 KB file and needs nothing installed beyond what Windows already includes.
+A lightweight flip clock screensaver for Windows 10 and 11. It is a single file of about 20 KB and needs nothing installed beyond what Windows already includes.
 
 ![FlipClock showing 2:34 PM](screenshot.png)
 
