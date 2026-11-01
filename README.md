@@ -12,9 +12,9 @@ A lightweight flip clock screensaver for Windows 10 and 11. It is a single 20 KB
 - Moves slightly each minute to reduce burn-in
 - No network access, no telemetry, no admin rights needed
 
-## Build
+## Download
 
-Run `build.cmd`. It uses the C# compiler that comes with Windows and produces `FlipClock.scr`.
+Get `FlipClock.scr` from the [latest release](https://github.com/dhruvdchavda/FlipClock/releases/latest), or build it yourself by running `build.cmd`, which uses the C# compiler that comes with Windows.
 
 ## Install
 
